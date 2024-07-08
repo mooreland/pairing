@@ -12,7 +12,7 @@ use ff::{Field, PrimeField};
 use group::cofactor::CofactorCurveAffine;
 use group::Group;
 use rand_core::RngCore;
-use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
+use subtle::{Choice, ConditionallySelectable, ConstantTimeEq, CtOption};
 
 pub const BN_X: u64 = 4965661367192848881;
 
@@ -123,7 +123,7 @@ impl<'a, 'b> Add<&'b Gt> for &'a Gt {
 
     #[inline]
     fn add(self, rhs: &'b Gt) -> Gt {
-        Gt(self.0 * rhs.0)
+        Gt(self.0 + rhs.0)
     }
 }
 
@@ -157,9 +157,18 @@ impl<'a, 'b> Mul<&'b Fr> for &'a Gt {
     }
 }
 
+impl<'a, 'b> Mul<&'b Gt> for &'a Gt {
+    type Output = Gt;
+
+    fn mul(self, rhs: &'b Gt) -> Gt {
+        Gt(self.0 * rhs.0)
+    }
+}
+
 impl_binops_additive!(Gt, Gt);
 impl_binops_multiplicative!(Gt, Fr);
 
+impl_binops_multiplicative!(Gt, Gt);
 impl<T> Sum<T> for Gt
 where
     T: Borrow<Gt>,
@@ -194,6 +203,33 @@ impl Group for Gt {
     #[must_use]
     fn double(&self) -> Self {
         self.double()
+    }
+}
+
+impl Field for Gt {
+    fn random(mut rng: impl RngCore) -> Self {
+        Self(Fq12::random(&mut rng))
+    }
+    fn zero() -> Self {
+        Self(Fq12::zero())
+    }
+    fn one() -> Self {
+        Self(Fq12::one())
+    }
+    fn is_zero(&self) -> Choice {
+        self.0.is_zero()
+    }
+    fn square(&self) -> Self {
+        Self(self.0.square())
+    }
+    fn double(&self) -> Self {
+        Self(self.0.double())
+    }
+    fn sqrt(&self) -> CtOption<Self> {
+        unimplemented!();
+    }
+    fn invert(&self) -> CtOption<Self> {
+        self.0.invert().map(|t| Gt(t))
     }
 }
 
@@ -617,6 +653,102 @@ pub fn multi_miller_loop(terms: &[(&G1Affine, &G2Prepared)]) -> Gt {
     Gt(f)
 }
 
+pub fn multi_miller_loop_c_wi(c_gt: &Gt, wi: &Gt, terms: &[(&G1Affine, &G2Prepared)]) -> Gt {
+    let c = c_gt.0;
+    let mut pairs = vec![];
+    for &(p, q) in terms {
+        if !bool::from(p.is_identity()) && !bool::from(q.is_zero()) {
+            pairs.push((p, q.coeffs.iter()));
+        }
+    }
+
+    // Final steps of the line function on prepared coefficients
+    fn ell(f: &mut Fq12, coeffs: &(Fq2, Fq2, Fq2), p: &G1Affine) {
+        let mut c0 = coeffs.0;
+        let mut c1 = coeffs.1;
+
+        c0.c0.mul_assign(&p.y);
+        c0.c1.mul_assign(&p.y);
+
+        c1.c0.mul_assign(&p.x);
+        c1.c1.mul_assign(&p.x);
+
+        // Sparse multiplication in Fq12
+        f.mul_by_034(&c0, &c1, &coeffs.2);
+    }
+
+    // let mut f = Fq12::one();
+    let c_inv = c.invert().unwrap();
+    let mut f = c_inv;
+
+    for i in (1..SIX_U_PLUS_2_NAF.len()).rev() {
+        let x = SIX_U_PLUS_2_NAF[i - 1];
+
+        // if i != SIX_U_PLUS_2_NAF.len() - 1 {
+        //     f.square_assign();
+        // }
+        f.square_assign();
+        // update c_inv
+        // f = f * c_inv, if digit == 1
+        // f = f * c, if digit == -1
+        match x {
+            1 => f.mul_assign(&c_inv),
+            -1 => f.mul_assign(&c),
+            _ => {}
+        }
+
+        for &mut (p, ref mut coeffs) in &mut pairs {
+            ell(&mut f, coeffs.next().unwrap(), &p);
+        }
+
+        match x {
+            1 => {
+                for &mut (p, ref mut coeffs) in &mut pairs {
+                    ell(&mut f, coeffs.next().unwrap(), &p);
+                }
+            }
+            -1 => {
+                for &mut (p, ref mut coeffs) in &mut pairs {
+                    ell(&mut f, coeffs.next().unwrap(), &p);
+                }
+            }
+            _ => continue,
+        }
+    }
+
+    // update c_inv
+    // f = f * c_inv^p * c^{p^2} * c_inv^{p^3}
+    let mut c_inv_p = c_inv;
+    c_inv_p.frobenius_map(1);
+    f.mul_assign(&c_inv_p);
+
+    let mut c_p2 = c;
+    c_p2.frobenius_map(2);
+    f.mul_assign(&c_p2);
+
+    let mut c_inv_p3 = c_inv;
+    c_inv_p3.frobenius_map(3);
+    f.mul_assign(&c_inv_p3);
+
+    // scale f
+    // f = f * wi
+    f.mul_assign(&wi.0);
+
+    for &mut (p, ref mut coeffs) in &mut pairs {
+        ell(&mut f, coeffs.next().unwrap(), &p);
+    }
+
+    for &mut (p, ref mut coeffs) in &mut pairs {
+        ell(&mut f, coeffs.next().unwrap(), &p);
+    }
+
+    for &mut (_p, ref mut coeffs) in &mut pairs {
+        assert_eq!(coeffs.next(), None);
+    }
+    assert_eq!(f, Fq12::one());
+    Gt(f)
+}
+
 pub fn pairing(g1: &G1Affine, g2: &G2Affine) -> Gt {
     let g2 = G2Prepared::from_affine(*g2);
     let terms: &[(&G1Affine, &G2Prepared)] = &[(g1, &g2)];
@@ -644,10 +776,18 @@ impl Engine for Bn256 {
 
 impl MultiMillerLoop for Bn256 {
     type G2Prepared = G2Prepared;
-    type Result = Gt;
+    // type Result = Gt;
 
-    fn multi_miller_loop(terms: &[(&Self::G1Affine, &Self::G2Prepared)]) -> Self::Result {
+    fn multi_miller_loop(terms: &[(&Self::G1Affine, &Self::G2Prepared)]) -> Self::Gt {
         multi_miller_loop(terms)
+    }
+
+    fn multi_miller_loop_c_wi(
+        c: &Self::Gt,
+        wi: &Self::Gt,
+        terms: &[(&Self::G1Affine, &Self::G2Prepared)],
+    ) -> Self::Gt {
+        multi_miller_loop_c_wi(c, wi, terms)
     }
 }
 

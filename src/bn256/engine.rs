@@ -1,4 +1,6 @@
-use crate::arithmetic::{Engine, MillerLoopResult, MultiMillerLoop, PairingCurveAffine};
+use crate::arithmetic::{
+    Engine, MillerLoopResult, MultiMillerLoop, MultiMillerLoopOnProvePairing, PairingCurveAffine,
+};
 use crate::bn256::fq::*;
 use crate::bn256::fq12::*;
 use crate::bn256::fq2::*;
@@ -458,7 +460,6 @@ impl G2Prepared {
         }
 
         let mut q1 = q;
-
         q1.x.c1 = q1.x.c1.neg();
         q1.x.mul_assign(&FROBENIUS_COEFF_FQ6_C1[1]);
 
@@ -683,10 +684,6 @@ pub fn multi_miller_loop_c_wi(c_gt: &Gt, wi: &Gt, terms: &[(&G1Affine, &G2Prepar
 
     for i in (1..SIX_U_PLUS_2_NAF.len()).rev() {
         let x = SIX_U_PLUS_2_NAF[i - 1];
-
-        // if i != SIX_U_PLUS_2_NAF.len() - 1 {
-        //     f.square_assign();
-        // }
         f.square_assign();
         // update c_inv
         // f = f * c_inv, if digit == 1
@@ -776,12 +773,16 @@ impl Engine for Bn256 {
 
 impl MultiMillerLoop for Bn256 {
     type G2Prepared = G2Prepared;
-    // type Result = Gt;
 
     fn multi_miller_loop(terms: &[(&Self::G1Affine, &Self::G2Prepared)]) -> Self::Gt {
         multi_miller_loop(terms)
     }
+}
 
+impl MultiMillerLoopOnProvePairing for Bn256 {
+    fn support_on_prove_pairing() -> bool {
+        true
+    }
     fn multi_miller_loop_c_wi(
         c: &Self::Gt,
         wi: &Self::Gt,

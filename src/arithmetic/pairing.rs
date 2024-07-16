@@ -76,12 +76,15 @@ pub trait MultiMillerLoop: Engine {
     /// The prepared form of `Self::G2Affine`.
     type G2Prepared: Clone + Send + Sync + From<Self::G2Affine>;
 
-    /// The type returned by `Engine::miller_loop`.
-    // type Result: MillerLoopResult<Gt = Self::Gt>;
-
     /// Computes $$\sum_{i=1}^n \textbf{ML}(a_i, b_i)$$ given a series of terms
     /// $$(a_1, b_1), (a_2, b_2), ..., (a_n, b_n).$$
     fn multi_miller_loop(terms: &[(&Self::G1Affine, &Self::G2Prepared)]) -> Self::Gt;
+}
+
+//refer "On Proving Pairings"(https://eprint.iacr.org/2024/640.pdf)
+pub trait MultiMillerLoopOnProvePairing: MultiMillerLoop {
+    //if support this scheme
+    fn support_on_prove_pairing() -> bool;
 
     fn multi_miller_loop_c_wi(
         c: &Self::Gt,

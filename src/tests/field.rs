@@ -225,7 +225,7 @@ use std::str::FromStr;
 use std::ops::Mul;
 use std::ops::Neg;
 #[test]
-fn test_checkpairing_with_c_wi() {
+fn test_pairing_with_c_wi() {
     // exp = 6x + 2 + p - p^2 = lambda - p^3
     let hex_str = Fq::MODULUS;
     let hex_str = hex_str
@@ -278,8 +278,6 @@ fn test_checkpairing_with_c_wi() {
     //6x+2
     // let six_x_2 = BigUint::from_str("29793968203157093288").unwrap();
     // println!("c_lamada-p3={:?}", c_inv.pow_vartime(six_x_2.to_u64_digits()));
-    // calc_naf_v(c);
-    // calc_naf_f(c);
     assert_eq!(hint, c.pow_vartime(p_pow3.to_u64_digits()));
 
     assert_eq!(
@@ -294,6 +292,13 @@ fn test_checkpairing_with_c_wi() {
     println!("Accumulated f_c_wi done!");
 }
 
+// refer https://github.com/BitVM/BitVM/blob/main/src/fflonk/compute_c_wi.rs
+// refer table 3 of https://eprint.iacr.org/2009/457.pdf
+// a: Fp12 which is cubic residue
+// c: random Fp12 which is cubic non-residue
+// s: satisfying p^12 - 1 = 3^s * t
+// t: satisfying p^12 - 1 = 3^s * t
+// k: k = (t + 1) // 3
 fn tonelli_shanks_cubic(a: Fq12, c: Fq12, s: u32, t: BigUint, k: BigUint) -> Fq12 {
     let mut r = a.pow_vartime(t.to_u64_digits());
     let e = 3_u32.pow(s - 1);

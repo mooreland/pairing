@@ -83,6 +83,7 @@ pub trait MultiMillerLoop: Engine {
 
 //refer "On Proving Pairings"(https://eprint.iacr.org/2024/640.pdf)
 pub trait MultiMillerLoopOnProvePairing: MultiMillerLoop {
+    type G2OnProvePrepared: Clone + Send + Sync + From<Self::G2Affine>;
     //if support this scheme
     fn support_on_prove_pairing() -> bool;
 
@@ -90,6 +91,16 @@ pub trait MultiMillerLoopOnProvePairing: MultiMillerLoop {
         c: &Self::Gt,
         wi: &Self::Gt,
         terms: &[(&Self::G1Affine, &Self::G2Prepared)],
+    ) -> Self::Gt;
+
+    fn multi_miller_loop_on_prove_pairing(
+        c: &Self::Gt,
+        wi: &Self::Gt,
+        terms: &[(&Self::G1Affine, &Self::G2OnProvePrepared)],
+    ) -> Self::Gt;
+
+    fn multi_miller_loop_on_prove_pairing_prepare(
+        terms: &[(&Self::G1Affine, &Self::G2OnProvePrepared)],
     ) -> Self::Gt;
 }
 

@@ -213,6 +213,7 @@ use crate::arithmetic::MillerLoopResult;
 use crate::bn256;
 use crate::bn256::Fq;
 use crate::bn256::Fq12;
+use crate::bn256::Gt;
 use crate::group::Curve;
 use crate::group::Group;
 use ark_std::One;
@@ -264,8 +265,7 @@ fn test_pairing_with_c_wi() {
             .0,
     );
 
-    let f =
-        bn256::multi_miller_loop(&[(&P1.neg().to_affine(), &Q1_prepared), (&P2, &Q2_prepared)]).0;
+    let f = bn256::multi_miller_loop(&[(&P1.neg().to_affine(), &Q1_prepared), (&P2, &Q2_prepared)]);
     println!("Bn254::multi_miller_loop done!");
     let (c, wi) = compute_c_wi(f);
     let c_inv = c.invert().unwrap();
@@ -283,12 +283,119 @@ fn test_pairing_with_c_wi() {
     assert_eq!(
         Fq12::one(),
         bn256::multi_miller_loop_c_wi(
-            c,
-            wi,
+            &c,
+            &wi,
             &[(&P1.neg().to_affine(), &Q1_prepared), (&P2, &Q2_prepared)]
         )
         .0,
     );
+    println!("Accumulated f_c_wi done!");
+}
+
+#[test]
+fn test_on_prove_paring() {
+    // exp = 6x + 2 + p - p^2 = lambda - p^3
+    let hex_str = Fq::MODULUS;
+    let hex_str = hex_str
+        .strip_prefix("0x")
+        .or_else(|| hex_str.strip_prefix("0X"))
+        .unwrap_or(hex_str);
+    let p_pow3 = &BigUint::from_str_radix(hex_str, 16).unwrap().pow(3_u32);
+
+    //0x1baaa710b0759ad331ec15183177faf68148fd2e5e487f1c2421c372dee2ddcdd45cf150c7e2d75ab87216b02105ec9bf0519bc6772f06e788e401a57040c54eb9b42c6f8f8e030b136a4fdd951c142faf174e7e839ac9157f83d3135ae0c55
+    let lambda = BigUint::from_str(
+        "10486551571378427818905133077457505975146652579011797175399169355881771981095211883813744499745558409789005132135496770941292989421431235276221147148858384772096778432243207188878598198850276842458913349817007302752534892127325269"
+    ).unwrap();
+
+    let (exp, sign) = if lambda > *p_pow3 {
+        (lambda - p_pow3, true)
+    } else {
+        (p_pow3 - lambda, false)
+    };
+
+    // prove e(P1, Q1) = e(P2, Q2)
+    // namely e(-P1, Q1) * e(P2, Q2) = 1
+    let P1 = bn256::G1::random(&mut OsRng);
+    let Q2 = bn256::G2::random(&mut OsRng);
+    let factor = bn256::Fr::from_raw([3_u64, 0, 0, 0]);
+    let P2 = P1.mul(&factor).to_affine();
+    let Q1 = Q2.mul(&factor).to_affine();
+    let Q1_prepared = bn256::G2Prepared::from(Q1);
+    let Q2_prepared = bn256::G2Prepared::from(Q2.to_affine());
+    let Q1OnProvePrepared = bn256::G2OnProvePrepared::from(Q1);
+    let Q2OnProvePrepared = bn256::G2OnProvePrepared::from(Q2.to_affine());
+
+    // f^{lambda - p^3} * wi = c^lambda
+    // equivalently (f * c_inv)^{lambda - p^3} * wi = c_inv^{-p^3} = c^{p^3}
+    assert_eq!(
+        Fq12::one(),
+        bn256::multi_miller_loop(&[(&P1.neg().to_affine(), &Q1_prepared), (&P2, &Q2_prepared)])
+            .final_exponentiation()
+            .0,
+    );
+
+    let f = bn256::multi_miller_loop(&[(&P1.neg().to_affine(), &Q1_prepared), (&P2, &Q2_prepared)]);
+    println!("Bn254::multi_miller_loop done!");
+    let (c, wi) = compute_c_wi(f);
+    let c_inv = c.invert().unwrap();
+    let hint = if sign {
+        f * wi * (c_inv.pow_vartime(exp.to_u64_digits()))
+    } else {
+        f * wi * (c_inv.pow_vartime(exp.to_u64_digits()).invert().unwrap())
+    };
+
+    //6x+2
+    // let six_x_2 = BigUint::from_str("29793968203157093288").unwrap();
+    // println!("c_lamada-p3={:?}", c_inv.pow_vartime(six_x_2.to_u64_digits()));
+    assert_eq!(hint, c.pow_vartime(p_pow3.to_u64_digits()));
+
+    assert_eq!(
+        Fq12::one(),
+        bn256::multi_miller_loop_c_wi(
+            &c,
+            &wi,
+            &[(&P1.neg().to_affine(), &Q1_prepared), (&P2, &Q2_prepared)]
+        )
+        .0,
+    );
+
+    assert_eq!(
+        Fq12::one(),
+        bn256::multi_miller_loop_on_prove_pairing_prepare(&[
+            (&P1.neg().to_affine(), &Q1OnProvePrepared),
+            (&P2, &Q2OnProvePrepared)
+        ])
+        .final_exponentiation()
+        .0,
+    );
+
+    let f = bn256::multi_miller_loop_on_prove_pairing_prepare(&[
+        (&P1.neg().to_affine(), &Q1OnProvePrepared),
+        (&P2, &Q2OnProvePrepared),
+    ]);
+    println!("on prove pairing calc miller f!");
+    let (c, wi) = compute_c_wi(f);
+    let c_inv = c.invert().unwrap();
+    let hint = if sign {
+        f * wi * (c_inv.pow_vartime(exp.to_u64_digits()))
+    } else {
+        f * wi * (c_inv.pow_vartime(exp.to_u64_digits()).invert().unwrap())
+    };
+    assert_eq!(hint, c.pow_vartime(p_pow3.to_u64_digits()));
+
+    assert_eq!(
+        Fq12::one(),
+        bn256::multi_miller_loop_on_prove_pairing(
+            &c,
+            &wi,
+            &[
+                (&P1.neg().to_affine(), &Q1OnProvePrepared),
+                (&P2, &Q2OnProvePrepared)
+            ]
+        )
+        .0,
+    );
+
     println!("Accumulated f_c_wi done!");
 }
 
@@ -299,7 +406,7 @@ fn test_pairing_with_c_wi() {
 // s: satisfying p^12 - 1 = 3^s * t
 // t: satisfying p^12 - 1 = 3^s * t
 // k: k = (t + 1) // 3
-fn tonelli_shanks_cubic(a: Fq12, c: Fq12, s: u32, t: BigUint, k: BigUint) -> Fq12 {
+fn tonelli_shanks_cubic(a: Fq12, c: Fq12, s: u32, t: BigUint, k: BigUint) -> Gt {
     let mut r = a.pow_vartime(t.to_u64_digits());
     let e = 3_u32.pow(s - 1);
     let exp = 3_u32.pow(s) * &t;
@@ -331,11 +438,11 @@ fn tonelli_shanks_cubic(a: Fq12, c: Fq12, s: u32, t: BigUint, k: BigUint) -> Fq1
     }
 
     assert_eq!(r.pow_vartime([3_u64]), a);
-    r
+    Gt(r)
 }
 
 // refer from Algorithm 5 of "On Proving Pairings"(https://eprint.iacr.org/2024/640.pdf)
-fn compute_c_wi(f: Fq12) -> (Fq12, Fq12) {
+fn compute_c_wi(f: Gt) -> (Gt, Gt) {
     let hex_str = Fq::MODULUS;
     let hex_str = hex_str
         .strip_prefix("0x")
@@ -363,7 +470,7 @@ fn compute_c_wi(f: Fq12) -> (Fq12, Fq12) {
     let cofactor_cubic = 3_u32.pow(s - 1) * &t;
 
     // make f is r-th residue, but it's not cubic residue
-    assert_eq!(f.pow_vartime(h.to_u64_digits()), Fq12::one());
+    assert_eq!(f.pow_vartime(h.to_u64_digits()).0, Fq12::one());
     //todo sometimes  f is cubic residue
     // assert_ne!(f.pow_vartime(cofactor_cubic.to_u64_digits()), Fq12::one());
 
@@ -380,21 +487,21 @@ fn compute_c_wi(f: Fq12) -> (Fq12, Fq12) {
             // obtain w which is t-th power of z
             w = z.pow_vartime(t.to_u64_digits());
         }
-        w
+        Gt(w)
     };
     // make sure 27-th root w, is 3-th non-residue and r-th residue
-    assert_ne!(w.pow_vartime(cofactor_cubic.to_u64_digits()), Fq12::one());
-    assert_eq!(w.pow_vartime(h.to_u64_digits()), Fq12::one());
+    assert_ne!(w.pow_vartime(cofactor_cubic.to_u64_digits()).0, Fq12::one());
+    assert_eq!(w.pow_vartime(h.to_u64_digits()).0, Fq12::one());
 
-    let wi = if f.pow_vartime(cofactor_cubic.to_u64_digits()) == Fq12::one() {
+    let wi = if f.pow_vartime(cofactor_cubic.to_u64_digits()).0 == Fq12::one() {
         println!("f is fq12_one------------");
-        Fq12::one()
+        Gt(Fq12::one())
     } else {
         // just two option, w and w^2, since w^3 must be cubic residue, leading f*w^3 must not be cubic residue
         let mut wi = w;
-        if (f * wi).pow_vartime(cofactor_cubic.to_u64_digits()) != Fq12::one() {
+        if (f * wi).pow_vartime(cofactor_cubic.to_u64_digits()).0 != Fq12::one() {
             assert_eq!(
-                (f * w * w).pow_vartime(cofactor_cubic.to_u64_digits()),
+                (f * w * w).pow_vartime(cofactor_cubic.to_u64_digits()).0,
                 Fq12::one()
             );
             wi = w * w;
@@ -402,7 +509,7 @@ fn compute_c_wi(f: Fq12) -> (Fq12, Fq12) {
         wi
     };
 
-    assert_eq!(wi.pow_vartime(h.to_u64_digits()), Fq12::one());
+    assert_eq!(wi.pow_vartime(h.to_u64_digits()).0, Fq12::one());
 
     assert_eq!(lambda, &d * &mm * &r);
     // f1 is scaled f
@@ -412,18 +519,21 @@ fn compute_c_wi(f: Fq12) -> (Fq12, Fq12) {
     let r_inv = r.modinv(&h).unwrap();
     assert_ne!(r_inv, BigUint::one());
     let f2 = f1.pow_vartime(r_inv.to_u64_digits());
-    assert_ne!(f2, Fq12::one());
+    assert_ne!(f2.0, Fq12::one());
 
     // m'-th root of f, say f3
     let mm_inv = mm.modinv(&(r * h)).unwrap();
     assert_ne!(mm_inv, BigUint::one());
     let f3 = f2.pow_vartime(mm_inv.to_u64_digits());
-    assert_eq!(f3.pow_vartime(cofactor_cubic.to_u64_digits()), Fq12::one());
-    assert_ne!(f3, Fq12::one());
+    assert_eq!(
+        f3.pow_vartime(cofactor_cubic.to_u64_digits()).0,
+        Fq12::one()
+    );
+    assert_ne!(f3.0, Fq12::one());
 
     // d-th (cubic) root, say c
-    let c = tonelli_shanks_cubic(f3, w, s, t, k);
-    assert_ne!(c, Fq12::one());
+    let c = tonelli_shanks_cubic(f3.0, w.0, s, t, k);
+    assert_ne!(c.0, Fq12::one());
     assert_eq!(c.pow_vartime(lambda.to_u64_digits()), f * wi);
 
     (c, wi)
@@ -517,4 +627,6 @@ fn test_naf() {
         "naf: {:?}",
         to_naf(&BigUint::from_str("29793968203157093288").unwrap())
     );
+    // calc_naf_f();
+    // calc_naf_v();
 }

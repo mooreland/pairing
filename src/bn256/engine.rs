@@ -488,9 +488,9 @@ impl From<G2Affine> for G2Prepared {
 
 #[derive(Clone, Debug)]
 pub struct G2OnProvePrepared {
-    pub(crate) coeffs: Vec<(Fq2, Fq2)>,
-    pub(crate) infinity: bool,
-    pub(crate) init_q: G2Affine,
+    pub coeffs: Vec<(Fq2, Fq2)>,
+    pub infinity: bool,
+    pub init_q: G2Affine,
 }
 
 impl G2OnProvePrepared {

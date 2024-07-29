@@ -488,9 +488,9 @@ impl From<G2Affine> for G2Prepared {
 
 #[derive(Clone, Debug)]
 pub struct G2OnProvePrepared {
-    pub coeffs: Vec<(Fq2, Fq2)>,
-    pub infinity: bool,
-    pub init_q: G2Affine,
+    pub(crate) coeffs: Vec<(Fq2, Fq2)>,
+    pub(crate) infinity: bool,
+    pub(crate) init_q: G2Affine,
 }
 
 impl G2OnProvePrepared {
@@ -1141,6 +1141,18 @@ pub fn pairing(g1: &G1Affine, g2: &G2Affine) -> Gt {
     u.final_exponentiation()
 }
 
+pub fn get_g2_on_prove_prepared_coeffs(p: &G2OnProvePrepared) -> Vec<((Fq, Fq), (Fq, Fq))> {
+    let mut r = vec![];
+    for v in p.coeffs.iter() {
+        r.push(((v.0.c0, v.0.c1), (v.1.c0, v.1.c1)))
+    }
+    r
+}
+
+pub fn get_g2_on_prove_prepared_init_q(p: &G2OnProvePrepared) -> G2Affine {
+    p.init_q
+}
+
 #[derive(Clone, Debug)]
 pub struct Bn256;
 
@@ -1193,6 +1205,14 @@ impl MultiMillerLoopOnProvePairing for Bn256 {
         terms: &[(&Self::G1Affine, &Self::G2OnProvePrepared)],
     ) -> Self::Gt {
         multi_miller_loop_on_prove_pairing_prepare(terms)
+    }
+
+    fn get_g2_on_prove_prepared_coeffs(p: &Self::G2OnProvePrepared) -> Vec<((Fq, Fq), (Fq, Fq))> {
+        get_g2_on_prove_prepared_coeffs(p)
+    }
+
+    fn get_g2_on_prove_prepared_init_q(p: &Self::G2OnProvePrepared) -> Self::G2Affine {
+        get_g2_on_prove_prepared_init_q(p)
     }
 }
 

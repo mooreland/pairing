@@ -87,21 +87,39 @@ pub trait MultiMillerLoopOnProvePairing: MultiMillerLoop {
     //if support this scheme
     fn support_on_prove_pairing() -> bool;
 
+    // verify miller loop result on project coordinates
     fn multi_miller_loop_c_wi(
         c: &Self::Gt,
         wi: &Self::Gt,
         terms: &[(&Self::G1Affine, &Self::G2Prepared)],
     ) -> Self::Gt;
 
+    // to calc miller loop on affine coordinates
+    fn multi_miller_loop_on_prove_pairing_prepare(
+        terms: &[(&Self::G1Affine, &Self::G2OnProvePrepared)],
+    ) -> Self::Gt;
+
+    // to verify miller loop of affine coordinates with c&wi
     fn multi_miller_loop_on_prove_pairing(
         c: &Self::Gt,
         wi: &Self::Gt,
         terms: &[(&Self::G1Affine, &Self::G2OnProvePrepared)],
     ) -> Self::Gt;
 
-    fn multi_miller_loop_on_prove_pairing_prepare(
-        terms: &[(&Self::G1Affine, &Self::G2OnProvePrepared)],
-    ) -> Self::Gt;
+    fn get_g2_on_prove_prepared_coeffs(
+        p: &Self::G2OnProvePrepared,
+    ) -> Vec<(
+        (
+            <Self::G1Affine as CurveAffine>::Base,
+            <Self::G1Affine as CurveAffine>::Base,
+        ),
+        (
+            <Self::G1Affine as CurveAffine>::Base,
+            <Self::G1Affine as CurveAffine>::Base,
+        ),
+    )>;
+
+    fn get_g2_on_prove_prepared_init_q(p: &Self::G2OnProvePrepared) -> Self::G2Affine;
 }
 
 /// Represents results of a Miller loop, one of the most expensive portions of the pairing

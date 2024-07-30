@@ -225,6 +225,7 @@ use std::str::FromStr;
 
 use std::ops::Mul;
 use std::ops::Neg;
+
 #[test]
 fn test_pairing_with_c_wi() {
     // exp = 6x + 2 + p - p^2 = lambda - p^3
@@ -248,24 +249,24 @@ fn test_pairing_with_c_wi() {
 
     // prove e(P1, Q1) = e(P2, Q2)
     // namely e(-P1, Q1) * e(P2, Q2) = 1
-    let P1 = bn256::G1::random(&mut OsRng);
-    let Q2 = bn256::G2::random(&mut OsRng);
+    let p1 = bn256::G1::random(&mut OsRng);
+    let q2 = bn256::G2::random(&mut OsRng);
     let factor = bn256::Fr::from_raw([3_u64, 0, 0, 0]);
-    let P2 = P1.mul(&factor).to_affine();
-    let Q1 = Q2.mul(&factor).to_affine();
-    let Q1_prepared = bn256::G2Prepared::from(Q1);
-    let Q2_prepared = bn256::G2Prepared::from(Q2.to_affine());
+    let p2 = p1.mul(&factor).to_affine();
+    let q1 = q2.mul(&factor).to_affine();
+    let q1_prepared = bn256::G2Prepared::from(q1);
+    let q2_prepared = bn256::G2Prepared::from(q2.to_affine());
 
     // f^{lambda - p^3} * wi = c^lambda
     // equivalently (f * c_inv)^{lambda - p^3} * wi = c_inv^{-p^3} = c^{p^3}
     assert_eq!(
         Fq12::one(),
-        bn256::multi_miller_loop(&[(&P1.neg().to_affine(), &Q1_prepared), (&P2, &Q2_prepared)])
+        bn256::multi_miller_loop(&[(&p1.neg().to_affine(), &q1_prepared), (&p2, &q2_prepared)])
             .final_exponentiation()
             .0,
     );
 
-    let f = bn256::multi_miller_loop(&[(&P1.neg().to_affine(), &Q1_prepared), (&P2, &Q2_prepared)]);
+    let f = bn256::multi_miller_loop(&[(&p1.neg().to_affine(), &q1_prepared), (&p2, &q2_prepared)]);
     println!("Bn254::multi_miller_loop done!");
     let (c, wi) = compute_c_wi(f);
     let c_inv = c.invert().unwrap();
@@ -285,7 +286,7 @@ fn test_pairing_with_c_wi() {
         bn256::multi_miller_loop_c_wi(
             &c,
             &wi,
-            &[(&P1.neg().to_affine(), &Q1_prepared), (&P2, &Q2_prepared)]
+            &[(&p1.neg().to_affine(), &q1_prepared), (&p2, &q2_prepared)]
         )
         .0,
     );
@@ -315,26 +316,26 @@ fn test_on_prove_paring() {
 
     // prove e(P1, Q1) = e(P2, Q2)
     // namely e(-P1, Q1) * e(P2, Q2) = 1
-    let P1 = bn256::G1::random(&mut OsRng);
-    let Q2 = bn256::G2::random(&mut OsRng);
+    let p1 = bn256::G1::random(&mut OsRng);
+    let q2 = bn256::G2::random(&mut OsRng);
     let factor = bn256::Fr::from_raw([3_u64, 0, 0, 0]);
-    let P2 = P1.mul(&factor).to_affine();
-    let Q1 = Q2.mul(&factor).to_affine();
-    let Q1_prepared = bn256::G2Prepared::from(Q1);
-    let Q2_prepared = bn256::G2Prepared::from(Q2.to_affine());
-    let Q1OnProvePrepared = bn256::G2OnProvePrepared::from(Q1);
-    let Q2OnProvePrepared = bn256::G2OnProvePrepared::from(Q2.to_affine());
+    let p2 = p1.mul(&factor).to_affine();
+    let q1 = q2.mul(&factor).to_affine();
+    let q1_prepared = bn256::G2Prepared::from(q1);
+    let q2_prepared = bn256::G2Prepared::from(q2.to_affine());
+    let q1_on_prove_prepared = bn256::G2OnProvePrepared::from(q1);
+    let q2_on_prove_prepared = bn256::G2OnProvePrepared::from(q2.to_affine());
 
     // f^{lambda - p^3} * wi = c^lambda
     // equivalently (f * c_inv)^{lambda - p^3} * wi = c_inv^{-p^3} = c^{p^3}
     assert_eq!(
         Fq12::one(),
-        bn256::multi_miller_loop(&[(&P1.neg().to_affine(), &Q1_prepared), (&P2, &Q2_prepared)])
+        bn256::multi_miller_loop(&[(&p1.neg().to_affine(), &q1_prepared), (&p2, &q2_prepared)])
             .final_exponentiation()
             .0,
     );
 
-    let f = bn256::multi_miller_loop(&[(&P1.neg().to_affine(), &Q1_prepared), (&P2, &Q2_prepared)]);
+    let f = bn256::multi_miller_loop(&[(&p1.neg().to_affine(), &q1_prepared), (&p2, &q2_prepared)]);
     println!("Bn254::multi_miller_loop done!");
     let (c, wi) = compute_c_wi(f);
     let c_inv = c.invert().unwrap();
@@ -354,7 +355,7 @@ fn test_on_prove_paring() {
         bn256::multi_miller_loop_c_wi(
             &c,
             &wi,
-            &[(&P1.neg().to_affine(), &Q1_prepared), (&P2, &Q2_prepared)]
+            &[(&p1.neg().to_affine(), &q1_prepared), (&p2, &q2_prepared)]
         )
         .0,
     );
@@ -362,16 +363,16 @@ fn test_on_prove_paring() {
     assert_eq!(
         Fq12::one(),
         bn256::multi_miller_loop_on_prove_pairing_prepare(&[
-            (&P1.neg().to_affine(), &Q1OnProvePrepared),
-            (&P2, &Q2OnProvePrepared)
+            (&p1.neg().to_affine(), &q1_on_prove_prepared),
+            (&p2, &q2_on_prove_prepared)
         ])
         .final_exponentiation()
         .0,
     );
 
     let f = bn256::multi_miller_loop_on_prove_pairing_prepare(&[
-        (&P1.neg().to_affine(), &Q1OnProvePrepared),
-        (&P2, &Q2OnProvePrepared),
+        (&p1.neg().to_affine(), &q1_on_prove_prepared),
+        (&p2, &q2_on_prove_prepared),
     ]);
     println!("on prove pairing calc miller f!");
     let (c, wi) = compute_c_wi(f);
@@ -389,8 +390,8 @@ fn test_on_prove_paring() {
             &c,
             &wi,
             &[
-                (&P1.neg().to_affine(), &Q1OnProvePrepared),
-                (&P2, &Q2OnProvePrepared)
+                (&p1.neg().to_affine(), &q1_on_prove_prepared),
+                (&p2, &q2_on_prove_prepared)
             ]
         )
         .0,

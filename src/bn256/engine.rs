@@ -486,8 +486,10 @@ impl From<G2Affine> for G2Prepared {
     }
 }
 
+//support on prove pairing
 #[derive(Clone, Debug)]
 pub struct G2OnProvePrepared {
+    //affine coordinates (slope, bias)
     pub(crate) coeffs: Vec<(Fq2, Fq2)>,
     pub(crate) infinity: bool,
     pub(crate) init_q: G2Affine,
@@ -507,11 +509,9 @@ impl G2OnProvePrepared {
             };
         }
 
+        // slope: alpha = 3 * x^2 / 2 * y
+        // bias = y - alpha * x
         fn doubling_step(r: &G2) -> (Fq2, Fq2) {
-            // T = T.force_affine()
-            // assert(T.z == T.one_element())
-            // ## slope: alpha = 3 * x^2 / 2 * y
-            // bias = y - alpha * x
             let fq2_two = Fq2::one().double();
             let fq2_three = fq2_two + Fq2::one();
             let t: G2Affine = r.into();
@@ -521,9 +521,7 @@ impl G2OnProvePrepared {
             assert_eq!(Fq2::zero(), t.y - alpha.mul(&t.x) - bias);
             (alpha, bias)
         }
-        fn double_verify(v: &(Fq2, Fq2), r: &G2) -> G2 {
-            let alpha = v.0;
-            let bias = v.1;
+        fn double_verify((alpha, bias): &(Fq2, Fq2), r: &G2) -> G2 {
             let r: G2Affine = r.into();
             // y - alpha*x - bias =0
             assert_eq!(Fq2::zero(), r.y - alpha.mul(&r.x) - bias);
@@ -533,7 +531,7 @@ impl G2OnProvePrepared {
             assert_eq!(
                 Fq2::zero(),
                 r.y.mul(&fq2_two)
-                    .mul(&v.0)
+                    .mul(alpha)
                     .sub(&r.x.square().mul(&fq2_three))
             );
             //x3 = alpha^2-2x
@@ -544,23 +542,16 @@ impl G2OnProvePrepared {
             G2Affine { x: x3, y: y3 }.into()
         }
 
+        // slope: alpha = (y2 - y1) / (x2 - x1)
+        // bias: b = y1 - alpha * x1
         fn addition_step(r: &G2, q: &G2Affine) -> (Fq2, Fq2) {
-            // T = T.force_affine()
-            // P = P.force_affine()
-            // assert(T.z == T.one_element())
-            // assert(P.z == P.one_element())
-            // ## slope: alpha = (y2 - y1) / (x2 - x1)
-            // ## bias: b = y1 - alpha * x1
-            // # bias = y1 - alpha * x1
             let r: G2Affine = r.into();
             let alpha = q.x.sub(&r.x).invert().unwrap();
             let alpha = q.y.sub(&r.y).mul(&alpha);
             let bias = r.y.sub(&alpha.mul(&r.x));
             (alpha, bias)
         }
-        fn add_verify(v: &(Fq2, Fq2), r: &G2, p: &G2Affine) -> G2 {
-            let alpha = v.0;
-            let bias = v.1;
+        fn addition_verify((alpha, bias): &(Fq2, Fq2), r: &G2, p: &G2Affine) -> G2 {
             let r: G2Affine = r.into();
             // y - alpha*x - bias =0
             assert_eq!(Fq2::zero(), r.y - alpha.mul(&r.x) - bias);
@@ -589,13 +580,13 @@ impl G2OnProvePrepared {
             match x {
                 1 => {
                     coeffs.push(addition_step(&r, &q));
-                    let t3 = add_verify(&coeffs[coeffs.len() - 1], &r, &q);
+                    let t3 = addition_verify(&coeffs[coeffs.len() - 1], &r, &q);
                     r = r + q;
                     assert_eq!(r, t3);
                 }
                 -1 => {
                     coeffs.push(addition_step(&r, &negq));
-                    let t3 = add_verify(&coeffs[coeffs.len() - 1], &r, &negq);
+                    let t3 = addition_verify(&coeffs[coeffs.len() - 1], &r, &negq);
                     r = r + negq;
                     assert_eq!(r, t3);
                 }
@@ -611,7 +602,7 @@ impl G2OnProvePrepared {
         q1.y.mul_assign(&XI_TO_Q_MINUS_1_OVER_2);
 
         coeffs.push(addition_step(&mut r, &q1));
-        let t3 = add_verify(&coeffs[coeffs.len() - 1], &r, &q1);
+        let t3 = addition_verify(&coeffs[coeffs.len() - 1], &r, &q1);
         r = r + q1;
         assert_eq!(r, t3);
 
@@ -619,11 +610,9 @@ impl G2OnProvePrepared {
         minusq2.x.mul_assign(&FROBENIUS_COEFF_FQ6_C1[2]);
 
         coeffs.push(addition_step(&mut r, &minusq2));
-        let t3 = add_verify(&coeffs[coeffs.len() - 1], &r, &minusq2);
+        let t3 = addition_verify(&coeffs[coeffs.len() - 1], &r, &minusq2);
         r = r + minusq2;
         assert_eq!(r, t3);
-
-        // coeffs.push((Fq2::zero(),r.x.mul(&r.z.square().invert().unwrap())));
 
         G2OnProvePrepared {
             coeffs,
@@ -641,7 +630,6 @@ impl From<G2Affine> for G2OnProvePrepared {
 
 impl MillerLoopResult for Gt {
     type Gt = Self;
-    // pub fn final_exponentiation(r: &Fq12) -> CtOption<Fq12> {
     fn final_exponentiation(&self) -> Gt {
         fn exp_by_x(f: &mut Fq12) {
             let x = BN_X;
@@ -807,6 +795,8 @@ pub fn multi_miller_loop(terms: &[(&G1Affine, &G2Prepared)]) -> Gt {
     Gt(f)
 }
 
+// support on prove pairing verify from affine coordinates coeffs(slope,bias)
+// verify first coeffs by init_q and calculate next q to verify next coeffs iteratively.
 pub fn multi_miller_loop_on_prove_pairing(
     c_gt: &Gt,
     wi: &Gt,
@@ -839,9 +829,7 @@ pub fn multi_miller_loop_on_prove_pairing(
         }
     }
 
-    fn double_verify(v: &(Fq2, Fq2), r: &mut G2Affine) {
-        let alpha = v.0;
-        let bias = v.1;
+    fn double_verify((alpha, bias): &(Fq2, Fq2), r: &mut G2Affine) {
         // y - alpha*x - bias =0
         assert_eq!(Fq2::zero(), r.y - alpha.mul(&r.x) - bias);
         // 3x^2 = alpha * 2y
@@ -849,7 +837,7 @@ pub fn multi_miller_loop_on_prove_pairing(
         let fq2_three = fq2_two + Fq2::one();
         assert_eq!(
             Fq2::zero(),
-            r.y.mul(&fq2_two).mul(&v.0) - r.x.square().mul(&fq2_three)
+            r.y.mul(&fq2_two).mul(alpha) - r.x.square().mul(&fq2_three)
         );
         //x3 = alpha^2-2x
         let x3 = alpha.square() - r.x.mul(&fq2_two);
@@ -859,9 +847,7 @@ pub fn multi_miller_loop_on_prove_pairing(
         r.x = x3;
         r.y = y3;
     }
-    fn add_verify(v: &(Fq2, Fq2), r: &mut G2Affine, p: &G2Affine) {
-        let alpha = v.0;
-        let bias = v.1;
+    fn addition_verify((alpha, bias): &(Fq2, Fq2), r: &mut G2Affine, p: &G2Affine) {
         // y - alpha*x - bias =0
         assert_eq!(Fq2::zero(), r.y - alpha.mul(&r.x) - bias);
         assert_eq!(Fq2::zero(), p.y - alpha.mul(&p.x) - bias);
@@ -876,7 +862,7 @@ pub fn multi_miller_loop_on_prove_pairing(
     }
 
     // coeffs:(alpha, bias)
-    // -y + alpha*x*z + bias*z^3
+    // -y + alpha*x*z + bias*z^3 (or y - alpha*x*z - bias*z^3 also ok)
     fn ell(f: &mut Fq12, coeffs: &(Fq2, Fq2), p: &G1Affine) {
         let mut c0 = Fq2::one().neg();
         c0.c0.mul_assign(&p.y);
@@ -916,7 +902,7 @@ pub fn multi_miller_loop_on_prove_pairing(
                     pairs.iter_mut().zip(next_qs.iter_mut()).zip(init_q.iter())
                 {
                     let coeff = coeffs.next().unwrap();
-                    add_verify(coeff, q, init_q);
+                    addition_verify(coeff, q, init_q);
                     ell(&mut f, coeff, &p);
                 }
             }
@@ -925,7 +911,7 @@ pub fn multi_miller_loop_on_prove_pairing(
                     pairs.iter_mut().zip(next_qs.iter_mut()).zip(init_q.iter())
                 {
                     let coeff = coeffs.next().unwrap();
-                    add_verify(coeff, q, &init_q.neg());
+                    addition_verify(coeff, q, &init_q.neg());
                     ell(&mut f, coeff, &p);
                 }
             }
@@ -957,7 +943,7 @@ pub fn multi_miller_loop_on_prove_pairing(
         .zip(init_frobenius_q.iter())
     {
         let coeff = coeffs.next().unwrap();
-        add_verify(coeff, q, &frobenius_q.0);
+        addition_verify(coeff, q, &frobenius_q.0);
         ell(&mut f, coeff, &p);
     }
 
@@ -967,7 +953,7 @@ pub fn multi_miller_loop_on_prove_pairing(
         .zip(init_frobenius_q.iter())
     {
         let coeff = coeffs.next().unwrap();
-        add_verify(coeff, q, &frobenius_q.1);
+        addition_verify(coeff, q, &frobenius_q.1);
         ell(&mut f, coeff, p);
     }
 
@@ -978,7 +964,7 @@ pub fn multi_miller_loop_on_prove_pairing(
     Gt(f)
 }
 
-//on prove pairing take affine coordinate(alpha,bias) calculation,
+//on prove pairing take affine coordinate(slope,bias) calculation,
 //the miller result is different with jacobin coordinate's
 pub fn multi_miller_loop_on_prove_pairing_prepare(terms: &[(&G1Affine, &G2OnProvePrepared)]) -> Gt {
     let mut pairs = vec![];
@@ -988,7 +974,7 @@ pub fn multi_miller_loop_on_prove_pairing_prepare(terms: &[(&G1Affine, &G2OnProv
         }
     }
 
-    //coeffs: (alpha, bias)
+    //coeffs: (slope(alpha), bias)
     // -y + alpha*x*z + bias*z^3
     fn ell(f: &mut Fq12, coeffs: &(Fq2, Fq2), p: &G1Affine) {
         let mut c0 = Fq2::one().neg();
@@ -1042,6 +1028,8 @@ pub fn multi_miller_loop_on_prove_pairing_prepare(terms: &[(&G1Affine, &G2OnProv
     Gt(f)
 }
 
+//multi miller loop calculation with r-th residual parameters c&wi,the result should be 1
+//r=6x+2+p-p^2+p^3, f*wi will make sure f*wi is r-th residual
 pub fn multi_miller_loop_c_wi(c_gt: &Gt, wi: &Gt, terms: &[(&G1Affine, &G2Prepared)]) -> Gt {
     let c = c_gt.0;
     let mut pairs = vec![];

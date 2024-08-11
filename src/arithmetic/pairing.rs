@@ -50,7 +50,11 @@ pub trait Engine: Sized + 'static + Clone {
         + for<'a> Mul<&'a Self::Scalar, Output = Self::G2>;
 
     /// The extension field that hosts the target group of the pairing.
-    type Gt: Group<Scalar = Self::Scalar> + ScalarMul<Self::Scalar> + ScalarMulOwned<Self::Scalar>;
+    type Gt: Group<Scalar = Self::Scalar>
+        + ScalarMul<Self::Scalar>
+        + ScalarMulOwned<Self::Scalar>
+        + ff::Field
+        + MillerLoopResult<Gt = Self::Gt>;
 
     /// Invoke the pairing function `G1 x G2 -> Gt` without the use of precomputation and
     /// other optimizations.
@@ -72,12 +76,50 @@ pub trait MultiMillerLoop: Engine {
     /// The prepared form of `Self::G2Affine`.
     type G2Prepared: Clone + Send + Sync + From<Self::G2Affine>;
 
-    /// The type returned by `Engine::miller_loop`.
-    type Result: MillerLoopResult<Gt = Self::Gt>;
-
     /// Computes $$\sum_{i=1}^n \textbf{ML}(a_i, b_i)$$ given a series of terms
     /// $$(a_1, b_1), (a_2, b_2), ..., (a_n, b_n).$$
-    fn multi_miller_loop(terms: &[(&Self::G1Affine, &Self::G2Prepared)]) -> Self::Result;
+    fn multi_miller_loop(terms: &[(&Self::G1Affine, &Self::G2Prepared)]) -> Self::Gt;
+}
+
+//refer "On Proving Pairings"(https://eprint.iacr.org/2024/640.pdf)
+pub trait MultiMillerLoopOnProvePairing: MultiMillerLoop {
+    type G2OnProvePrepared: Clone + Send + Sync + From<Self::G2Affine>;
+    //if support this scheme
+    fn support_on_prove_pairing() -> bool;
+
+    // verify miller loop result on project coordinates
+    fn multi_miller_loop_c_wi(
+        c: &Self::Gt,
+        wi: &Self::Gt,
+        terms: &[(&Self::G1Affine, &Self::G2Prepared)],
+    ) -> Self::Gt;
+
+    // to calc miller loop on affine coordinates
+    fn multi_miller_loop_on_prove_pairing_prepare(
+        terms: &[(&Self::G1Affine, &Self::G2OnProvePrepared)],
+    ) -> Self::Gt;
+
+    // to verify miller loop of affine coordinates with c&wi
+    fn multi_miller_loop_on_prove_pairing(
+        c: &Self::Gt,
+        wi: &Self::Gt,
+        terms: &[(&Self::G1Affine, &Self::G2OnProvePrepared)],
+    ) -> Self::Gt;
+
+    fn get_g2_on_prove_prepared_coeffs(
+        p: &Self::G2OnProvePrepared,
+    ) -> Vec<(
+        (
+            <Self::G1Affine as CurveAffine>::Base,
+            <Self::G1Affine as CurveAffine>::Base,
+        ),
+        (
+            <Self::G1Affine as CurveAffine>::Base,
+            <Self::G1Affine as CurveAffine>::Base,
+        ),
+    )>;
+
+    fn get_g2_on_prove_prepared_init_q(p: &Self::G2OnProvePrepared) -> Self::G2Affine;
 }
 
 /// Represents results of a Miller loop, one of the most expensive portions of the pairing

@@ -1,4 +1,6 @@
-use crate::arithmetic::{Engine, MillerLoopResult, MultiMillerLoop, PairingCurveAffine};
+use crate::arithmetic::{
+    Engine, MillerLoopResult, MultiMillerLoop, MultiMillerLoopOnProvePairing, PairingCurveAffine,
+};
 use crate::bn256::fq::*;
 use crate::bn256::fq12::*;
 use crate::bn256::fq2::*;
@@ -12,7 +14,7 @@ use ff::{Field, PrimeField};
 use group::cofactor::CofactorCurveAffine;
 use group::Group;
 use rand_core::RngCore;
-use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
+use subtle::{Choice, ConditionallySelectable, ConstantTimeEq, CtOption};
 
 pub const BN_X: u64 = 4965661367192848881;
 
@@ -123,7 +125,7 @@ impl<'a, 'b> Add<&'b Gt> for &'a Gt {
 
     #[inline]
     fn add(self, rhs: &'b Gt) -> Gt {
-        Gt(self.0 * rhs.0)
+        Gt(self.0 + rhs.0)
     }
 }
 
@@ -157,9 +159,18 @@ impl<'a, 'b> Mul<&'b Fr> for &'a Gt {
     }
 }
 
+impl<'a, 'b> Mul<&'b Gt> for &'a Gt {
+    type Output = Gt;
+
+    fn mul(self, rhs: &'b Gt) -> Gt {
+        Gt(self.0 * rhs.0)
+    }
+}
+
 impl_binops_additive!(Gt, Gt);
 impl_binops_multiplicative!(Gt, Fr);
 
+impl_binops_multiplicative!(Gt, Gt);
 impl<T> Sum<T> for Gt
 where
     T: Borrow<Gt>,
@@ -194,6 +205,33 @@ impl Group for Gt {
     #[must_use]
     fn double(&self) -> Self {
         self.double()
+    }
+}
+
+impl Field for Gt {
+    fn random(mut rng: impl RngCore) -> Self {
+        Self(Fq12::random(&mut rng))
+    }
+    fn zero() -> Self {
+        Self(Fq12::zero())
+    }
+    fn one() -> Self {
+        Self(Fq12::one())
+    }
+    fn is_zero(&self) -> Choice {
+        self.0.is_zero()
+    }
+    fn square(&self) -> Self {
+        Self(self.0.square())
+    }
+    fn double(&self) -> Self {
+        Self(self.0.double())
+    }
+    fn sqrt(&self) -> CtOption<Self> {
+        unimplemented!();
+    }
+    fn invert(&self) -> CtOption<Self> {
+        self.0.invert().map(|t| Gt(t))
     }
 }
 
@@ -422,7 +460,6 @@ impl G2Prepared {
         }
 
         let mut q1 = q;
-
         q1.x.c1 = q1.x.c1.neg();
         q1.x.mul_assign(&FROBENIUS_COEFF_FQ6_C1[1]);
 
@@ -449,9 +486,150 @@ impl From<G2Affine> for G2Prepared {
     }
 }
 
+//support on prove pairing
+#[derive(Clone, Debug)]
+pub struct G2OnProvePrepared {
+    //affine coordinates (slope, bias)
+    pub(crate) coeffs: Vec<(Fq2, Fq2)>,
+    pub(crate) infinity: bool,
+    pub(crate) init_q: G2Affine,
+}
+
+impl G2OnProvePrepared {
+    pub fn is_zero(&self) -> bool {
+        self.infinity
+    }
+
+    pub fn from_affine(q: G2Affine) -> Self {
+        if bool::from(q.is_identity()) {
+            return G2OnProvePrepared {
+                coeffs: vec![],
+                infinity: true,
+                init_q: q,
+            };
+        }
+
+        // slope: alpha = 3 * x^2 / 2 * y
+        // bias = y - alpha * x
+        fn doubling_step(r: &G2) -> (Fq2, Fq2) {
+            let fq2_two = Fq2::one().double();
+            let fq2_three = fq2_two + Fq2::one();
+            let t: G2Affine = r.into();
+            let alpha = t.y.mul(&fq2_two).invert().unwrap();
+            let alpha = t.x.square().mul(&fq2_three).mul(&alpha);
+            let bias = t.y.sub(&alpha.mul(&t.x));
+            assert_eq!(Fq2::zero(), t.y - alpha.mul(&t.x) - bias);
+            (alpha, bias)
+        }
+        fn double_verify((alpha, bias): &(Fq2, Fq2), r: &G2) -> G2 {
+            let r: G2Affine = r.into();
+            // y - alpha*x - bias =0
+            assert_eq!(Fq2::zero(), r.y - alpha.mul(&r.x) - bias);
+            // 3x^2 = alpha * 2y
+            let fq2_two = Fq2::one().double();
+            let fq2_three = fq2_two + Fq2::one();
+            assert_eq!(
+                Fq2::zero(),
+                r.y.mul(&fq2_two)
+                    .mul(alpha)
+                    .sub(&r.x.square().mul(&fq2_three))
+            );
+            //x3 = alpha^2-2x
+            let x3 = alpha.square() - r.x.mul(&fq2_two);
+            //y3 = -alpha*x3 - bias
+            let y3 = -alpha.mul(&x3) - bias;
+
+            G2Affine { x: x3, y: y3 }.into()
+        }
+
+        // slope: alpha = (y2 - y1) / (x2 - x1)
+        // bias: b = y1 - alpha * x1
+        fn addition_step(r: &G2, q: &G2Affine) -> (Fq2, Fq2) {
+            let r: G2Affine = r.into();
+            let alpha = q.x.sub(&r.x).invert().unwrap();
+            let alpha = q.y.sub(&r.y).mul(&alpha);
+            let bias = r.y.sub(&alpha.mul(&r.x));
+            (alpha, bias)
+        }
+        fn addition_verify((alpha, bias): &(Fq2, Fq2), r: &G2, p: &G2Affine) -> G2 {
+            let r: G2Affine = r.into();
+            // y - alpha*x - bias =0
+            assert_eq!(Fq2::zero(), r.y - alpha.mul(&r.x) - bias);
+            assert_eq!(Fq2::zero(), p.y - alpha.mul(&p.x) - bias);
+
+            //x3 = alpha^2-x1-x2
+            let x3 = alpha.square() - r.x - p.x;
+            //y3 = -alpha*x3 - bias
+            let y3 = -alpha.mul(&x3) - bias;
+
+            G2Affine { x: x3, y: y3 }.into()
+        }
+
+        let mut coeffs = vec![];
+        let mut r: G2 = q.into();
+
+        let mut negq = q;
+        negq = -negq;
+
+        for i in (1..SIX_U_PLUS_2_NAF.len()).rev() {
+            coeffs.push(doubling_step(&r));
+            let t3 = double_verify(&coeffs[coeffs.len() - 1], &r);
+            r = r.double();
+            assert_eq!(r, t3);
+            let x = SIX_U_PLUS_2_NAF[i - 1];
+            match x {
+                1 => {
+                    coeffs.push(addition_step(&r, &q));
+                    let t3 = addition_verify(&coeffs[coeffs.len() - 1], &r, &q);
+                    r = r + q;
+                    assert_eq!(r, t3);
+                }
+                -1 => {
+                    coeffs.push(addition_step(&r, &negq));
+                    let t3 = addition_verify(&coeffs[coeffs.len() - 1], &r, &negq);
+                    r = r + negq;
+                    assert_eq!(r, t3);
+                }
+                _ => continue,
+            }
+        }
+
+        let mut q1 = q;
+        q1.x.c1 = q1.x.c1.neg();
+        q1.x.mul_assign(&FROBENIUS_COEFF_FQ6_C1[1]);
+
+        q1.y.c1 = q1.y.c1.neg();
+        q1.y.mul_assign(&XI_TO_Q_MINUS_1_OVER_2);
+
+        coeffs.push(addition_step(&mut r, &q1));
+        let t3 = addition_verify(&coeffs[coeffs.len() - 1], &r, &q1);
+        r = r + q1;
+        assert_eq!(r, t3);
+
+        let mut minusq2 = q;
+        minusq2.x.mul_assign(&FROBENIUS_COEFF_FQ6_C1[2]);
+
+        coeffs.push(addition_step(&mut r, &minusq2));
+        let t3 = addition_verify(&coeffs[coeffs.len() - 1], &r, &minusq2);
+        r = r + minusq2;
+        assert_eq!(r, t3);
+
+        G2OnProvePrepared {
+            coeffs,
+            infinity: false,
+            init_q: q,
+        }
+    }
+}
+
+impl From<G2Affine> for G2OnProvePrepared {
+    fn from(q: G2Affine) -> G2OnProvePrepared {
+        G2OnProvePrepared::from_affine(q)
+    }
+}
+
 impl MillerLoopResult for Gt {
     type Gt = Self;
-    // pub fn final_exponentiation(r: &Fq12) -> CtOption<Fq12> {
     fn final_exponentiation(&self) -> Gt {
         fn exp_by_x(f: &mut Fq12) {
             let x = BN_X;
@@ -617,11 +795,350 @@ pub fn multi_miller_loop(terms: &[(&G1Affine, &G2Prepared)]) -> Gt {
     Gt(f)
 }
 
+// support on prove pairing verify from affine coordinates coeffs(slope,bias)
+// verify first coeffs by init_q and calculate next q to verify next coeffs iteratively.
+pub fn multi_miller_loop_on_prove_pairing(
+    c_gt: &Gt,
+    wi: &Gt,
+    terms: &[(&G1Affine, &G2OnProvePrepared)],
+) -> Gt {
+    let c = c_gt.0;
+    let mut pairs = vec![];
+    let mut init_q = vec![];
+    for &(_, q) in terms.iter() {
+        init_q.push(q.init_q);
+    }
+    let mut init_frobenius_q = vec![];
+    for q in init_q.iter() {
+        let mut q1 = q.clone();
+        q1.x.c1 = q1.x.c1.neg();
+        q1.x.mul_assign(&FROBENIUS_COEFF_FQ6_C1[1]);
+
+        q1.y.c1 = q1.y.c1.neg();
+        q1.y.mul_assign(&XI_TO_Q_MINUS_1_OVER_2);
+
+        let mut minusq2 = q.clone();
+        minusq2.x.mul_assign(&FROBENIUS_COEFF_FQ6_C1[2]);
+
+        init_frobenius_q.push((q1, minusq2))
+    }
+
+    for &(p, q) in terms {
+        if !bool::from(p.is_identity()) && !bool::from(q.is_zero()) {
+            pairs.push((p, q.coeffs.iter()));
+        }
+    }
+
+    fn double_verify((alpha, bias): &(Fq2, Fq2), r: &mut G2Affine) {
+        // y - alpha*x - bias =0
+        assert_eq!(Fq2::zero(), r.y - alpha.mul(&r.x) - bias);
+        // 3x^2 = alpha * 2y
+        let fq2_two = Fq2::one().double();
+        let fq2_three = fq2_two + Fq2::one();
+        assert_eq!(
+            Fq2::zero(),
+            r.y.mul(&fq2_two).mul(alpha) - r.x.square().mul(&fq2_three)
+        );
+        //x3 = alpha^2-2x
+        let x3 = alpha.square() - r.x.mul(&fq2_two);
+        //y3 = -alpha*x3 - bias
+        let y3 = -alpha.mul(&x3) - bias;
+
+        r.x = x3;
+        r.y = y3;
+    }
+    fn addition_verify((alpha, bias): &(Fq2, Fq2), r: &mut G2Affine, p: &G2Affine) {
+        // y - alpha*x - bias =0
+        assert_eq!(Fq2::zero(), r.y - alpha.mul(&r.x) - bias);
+        assert_eq!(Fq2::zero(), p.y - alpha.mul(&p.x) - bias);
+
+        //x3 = alpha^2-x1-x2
+        let x3 = alpha.square() - r.x - p.x;
+        //y3 = -alpha*x3 - bias
+        let y3 = -alpha.mul(&x3) - bias;
+
+        r.x = x3;
+        r.y = y3;
+    }
+
+    // coeffs:(alpha, bias)
+    // -y + alpha*x*z + bias*z^3 (or y - alpha*x*z - bias*z^3 also ok)
+    fn ell(f: &mut Fq12, coeffs: &(Fq2, Fq2), p: &G1Affine) {
+        let mut c0 = Fq2::one().neg();
+        c0.c0.mul_assign(&p.y);
+
+        let mut c1 = coeffs.0;
+        c1.c0.mul_assign(&p.x);
+        c1.c1.mul_assign(&p.x);
+
+        // Sparse multiplication in Fq12
+        f.mul_by_034(&c0, &c1, &coeffs.1);
+    }
+
+    let c_inv = c.invert().unwrap();
+    let mut f = c_inv;
+    let mut next_qs = init_q.clone();
+    for i in (1..SIX_U_PLUS_2_NAF.len()).rev() {
+        let x = SIX_U_PLUS_2_NAF[i - 1];
+        f.square_assign();
+        // update c_inv
+        // f = f * c_inv, if digit == 1
+        // f = f * c, if digit == -1
+        match x {
+            1 => f.mul_assign(&c_inv),
+            -1 => f.mul_assign(&c),
+            _ => {}
+        }
+
+        for ((p, coeffs), q) in pairs.iter_mut().zip(next_qs.iter_mut()) {
+            let coeff = coeffs.next().unwrap();
+            double_verify(coeff, q);
+            ell(&mut f, coeff, &p);
+        }
+
+        match x {
+            1 => {
+                for (((p, coeffs), q), init_q) in
+                    pairs.iter_mut().zip(next_qs.iter_mut()).zip(init_q.iter())
+                {
+                    let coeff = coeffs.next().unwrap();
+                    addition_verify(coeff, q, init_q);
+                    ell(&mut f, coeff, &p);
+                }
+            }
+            -1 => {
+                for (((p, coeffs), q), init_q) in
+                    pairs.iter_mut().zip(next_qs.iter_mut()).zip(init_q.iter())
+                {
+                    let coeff = coeffs.next().unwrap();
+                    addition_verify(coeff, q, &init_q.neg());
+                    ell(&mut f, coeff, &p);
+                }
+            }
+            _ => continue,
+        }
+    }
+
+    // update c_inv
+    // f = f * c_inv^p * c^{p^2} * c_inv^{p^3}
+    let mut c_inv_p = c_inv;
+    c_inv_p.frobenius_map(1);
+    f.mul_assign(&c_inv_p);
+
+    let mut c_p2 = c;
+    c_p2.frobenius_map(2);
+    f.mul_assign(&c_p2);
+
+    let mut c_inv_p3 = c_inv;
+    c_inv_p3.frobenius_map(3);
+    f.mul_assign(&c_inv_p3);
+
+    // scale f
+    // f = f * wi
+    f.mul_assign(&wi.0);
+
+    for (((p, coeffs), q), frobenius_q) in pairs
+        .iter_mut()
+        .zip(next_qs.iter_mut())
+        .zip(init_frobenius_q.iter())
+    {
+        let coeff = coeffs.next().unwrap();
+        addition_verify(coeff, q, &frobenius_q.0);
+        ell(&mut f, coeff, &p);
+    }
+
+    for (((p, coeffs), q), frobenius_q) in pairs
+        .iter_mut()
+        .zip(next_qs.iter_mut())
+        .zip(init_frobenius_q.iter())
+    {
+        let coeff = coeffs.next().unwrap();
+        addition_verify(coeff, q, &frobenius_q.1);
+        ell(&mut f, coeff, p);
+    }
+
+    for &mut (_p, ref mut coeffs) in &mut pairs {
+        assert_eq!(coeffs.next(), None);
+    }
+    assert_eq!(f, Fq12::one());
+    Gt(f)
+}
+
+//on prove pairing take affine coordinate(slope,bias) calculation,
+//the miller result is different with jacobin coordinate's
+pub fn multi_miller_loop_on_prove_pairing_prepare(terms: &[(&G1Affine, &G2OnProvePrepared)]) -> Gt {
+    let mut pairs = vec![];
+    for &(p, q) in terms {
+        if !bool::from(p.is_identity()) && !bool::from(q.is_zero()) {
+            pairs.push((p, q.coeffs.iter()));
+        }
+    }
+
+    //coeffs: (slope(alpha), bias)
+    // -y + alpha*x*z + bias*z^3
+    fn ell(f: &mut Fq12, coeffs: &(Fq2, Fq2), p: &G1Affine) {
+        let mut c0 = Fq2::one().neg();
+        c0.c0.mul_assign(&p.y);
+
+        let mut c1 = coeffs.0;
+        c1.c0.mul_assign(&p.x);
+        c1.c1.mul_assign(&p.x);
+
+        // Sparse multiplication in Fq12
+        f.mul_by_034(&c0, &c1, &coeffs.1);
+    }
+
+    let mut f = Fq12::one();
+
+    for i in (1..SIX_U_PLUS_2_NAF.len()).rev() {
+        if i != SIX_U_PLUS_2_NAF.len() - 1 {
+            f.square_assign();
+        }
+        for &mut (p, ref mut coeffs) in &mut pairs {
+            ell(&mut f, coeffs.next().unwrap(), &p);
+        }
+        let x = SIX_U_PLUS_2_NAF[i - 1];
+        match x {
+            1 => {
+                for &mut (p, ref mut coeffs) in &mut pairs {
+                    ell(&mut f, coeffs.next().unwrap(), &p);
+                }
+            }
+            -1 => {
+                for &mut (p, ref mut coeffs) in &mut pairs {
+                    ell(&mut f, coeffs.next().unwrap(), &p);
+                }
+            }
+            _ => continue,
+        }
+    }
+
+    for &mut (p, ref mut coeffs) in &mut pairs {
+        ell(&mut f, coeffs.next().unwrap(), &p);
+    }
+
+    for &mut (p, ref mut coeffs) in &mut pairs {
+        ell(&mut f, coeffs.next().unwrap(), &p);
+    }
+
+    for &mut (_p, ref mut coeffs) in &mut pairs {
+        assert_eq!(coeffs.next(), None);
+    }
+
+    Gt(f)
+}
+
+//multi miller loop calculation with r-th residual parameters c&wi,the result should be 1
+//r=6x+2+p-p^2+p^3, f*wi will make sure f*wi is r-th residual
+pub fn multi_miller_loop_c_wi(c_gt: &Gt, wi: &Gt, terms: &[(&G1Affine, &G2Prepared)]) -> Gt {
+    let c = c_gt.0;
+    let mut pairs = vec![];
+    for &(p, q) in terms {
+        if !bool::from(p.is_identity()) && !bool::from(q.is_zero()) {
+            pairs.push((p, q.coeffs.iter()));
+        }
+    }
+
+    // Final steps of the line function on prepared coefficients
+    fn ell(f: &mut Fq12, coeffs: &(Fq2, Fq2, Fq2), p: &G1Affine) {
+        let mut c0 = coeffs.0;
+        let mut c1 = coeffs.1;
+
+        c0.c0.mul_assign(&p.y);
+        c0.c1.mul_assign(&p.y);
+
+        c1.c0.mul_assign(&p.x);
+        c1.c1.mul_assign(&p.x);
+
+        // Sparse multiplication in Fq12
+        f.mul_by_034(&c0, &c1, &coeffs.2);
+    }
+
+    // let mut f = Fq12::one();
+    let c_inv = c.invert().unwrap();
+    let mut f = c_inv;
+
+    for i in (1..SIX_U_PLUS_2_NAF.len()).rev() {
+        let x = SIX_U_PLUS_2_NAF[i - 1];
+        f.square_assign();
+        // update c_inv
+        // f = f * c_inv, if digit == 1
+        // f = f * c, if digit == -1
+        match x {
+            1 => f.mul_assign(&c_inv),
+            -1 => f.mul_assign(&c),
+            _ => {}
+        }
+
+        for &mut (p, ref mut coeffs) in &mut pairs {
+            ell(&mut f, coeffs.next().unwrap(), &p);
+        }
+
+        match x {
+            1 => {
+                for &mut (p, ref mut coeffs) in &mut pairs {
+                    ell(&mut f, coeffs.next().unwrap(), &p);
+                }
+            }
+            -1 => {
+                for &mut (p, ref mut coeffs) in &mut pairs {
+                    ell(&mut f, coeffs.next().unwrap(), &p);
+                }
+            }
+            _ => continue,
+        }
+    }
+
+    // update c_inv
+    // f = f * c_inv^p * c^{p^2} * c_inv^{p^3}
+    let mut c_inv_p = c_inv;
+    c_inv_p.frobenius_map(1);
+    f.mul_assign(&c_inv_p);
+
+    let mut c_p2 = c;
+    c_p2.frobenius_map(2);
+    f.mul_assign(&c_p2);
+
+    let mut c_inv_p3 = c_inv;
+    c_inv_p3.frobenius_map(3);
+    f.mul_assign(&c_inv_p3);
+
+    // scale f
+    // f = f * wi
+    f.mul_assign(&wi.0);
+
+    for &mut (p, ref mut coeffs) in &mut pairs {
+        ell(&mut f, coeffs.next().unwrap(), &p);
+    }
+
+    for &mut (p, ref mut coeffs) in &mut pairs {
+        ell(&mut f, coeffs.next().unwrap(), &p);
+    }
+
+    for &mut (_p, ref mut coeffs) in &mut pairs {
+        assert_eq!(coeffs.next(), None);
+    }
+    assert_eq!(f, Fq12::one());
+    Gt(f)
+}
+
 pub fn pairing(g1: &G1Affine, g2: &G2Affine) -> Gt {
     let g2 = G2Prepared::from_affine(*g2);
     let terms: &[(&G1Affine, &G2Prepared)] = &[(g1, &g2)];
     let u = multi_miller_loop(terms);
     u.final_exponentiation()
+}
+
+pub fn get_g2_on_prove_prepared_coeffs(p: &G2OnProvePrepared) -> Vec<((Fq, Fq), (Fq, Fq))> {
+    let mut r = vec![];
+    for v in p.coeffs.iter() {
+        r.push(((v.0.c0, v.0.c1), (v.1.c0, v.1.c1)))
+    }
+    r
+}
+
+pub fn get_g2_on_prove_prepared_init_q(p: &G2OnProvePrepared) -> G2Affine {
+    p.init_q
 }
 
 #[derive(Clone, Debug)]
@@ -644,10 +1161,46 @@ impl Engine for Bn256 {
 
 impl MultiMillerLoop for Bn256 {
     type G2Prepared = G2Prepared;
-    type Result = Gt;
 
-    fn multi_miller_loop(terms: &[(&Self::G1Affine, &Self::G2Prepared)]) -> Self::Result {
+    fn multi_miller_loop(terms: &[(&Self::G1Affine, &Self::G2Prepared)]) -> Self::Gt {
         multi_miller_loop(terms)
+    }
+}
+
+impl MultiMillerLoopOnProvePairing for Bn256 {
+    type G2OnProvePrepared = G2OnProvePrepared;
+
+    fn support_on_prove_pairing() -> bool {
+        true
+    }
+    fn multi_miller_loop_c_wi(
+        c: &Self::Gt,
+        wi: &Self::Gt,
+        terms: &[(&Self::G1Affine, &Self::G2Prepared)],
+    ) -> Self::Gt {
+        multi_miller_loop_c_wi(c, wi, terms)
+    }
+
+    fn multi_miller_loop_on_prove_pairing(
+        c: &Self::Gt,
+        wi: &Self::Gt,
+        terms: &[(&Self::G1Affine, &Self::G2OnProvePrepared)],
+    ) -> Self::Gt {
+        multi_miller_loop_on_prove_pairing(c, wi, terms)
+    }
+
+    fn multi_miller_loop_on_prove_pairing_prepare(
+        terms: &[(&Self::G1Affine, &Self::G2OnProvePrepared)],
+    ) -> Self::Gt {
+        multi_miller_loop_on_prove_pairing_prepare(terms)
+    }
+
+    fn get_g2_on_prove_prepared_coeffs(p: &Self::G2OnProvePrepared) -> Vec<((Fq, Fq), (Fq, Fq))> {
+        get_g2_on_prove_prepared_coeffs(p)
+    }
+
+    fn get_g2_on_prove_prepared_init_q(p: &Self::G2OnProvePrepared) -> Self::G2Affine {
+        get_g2_on_prove_prepared_init_q(p)
     }
 }
 

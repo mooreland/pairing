@@ -19,6 +19,7 @@ macro_rules! new_curve_impl {
         }
 
         #[derive(Copy, Clone)]
+        #[cfg_attr(feature = "derive_serde", derive(Serialize, Deserialize))]
         $($privacy)* struct $name_affine {
             pub x: $base,
             pub y: $base,

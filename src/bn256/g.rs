@@ -12,6 +12,8 @@ use group::{
     cofactor::CofactorGroup, prime::PrimeCurveAffine, Curve as _, Group as _, GroupEncoding,
 };
 use rand::RngCore;
+#[cfg(feature = "derive_serde")]
+use serde::{Deserialize, Serialize};
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq, CtOption};
 
 new_curve_impl!(

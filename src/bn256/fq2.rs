@@ -5,12 +5,15 @@ use core::convert::TryInto;
 use core::ops::{Add, Mul, Neg, Sub};
 use ff::Field;
 use rand::RngCore;
+#[cfg(feature = "derive_serde")]
+use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::io::{self, Read, Write};
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq, CtOption};
 
 /// An element of Fq2, represented by c0 + c1 * u.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "derive_serde", derive(Serialize, Deserialize))]
 pub struct Fq2 {
     pub c0: Fq,
     pub c1: Fq,

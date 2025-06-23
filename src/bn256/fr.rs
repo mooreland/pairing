@@ -11,7 +11,11 @@ use rand::RngCore;
 use std::io::{self, Read, Write};
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq, CtOption};
 
+#[cfg(feature = "derive_serde")]
+use serde::{Deserialize, Serialize};
+
 #[derive(Clone, Copy, Eq, Hash)]
+#[cfg_attr(feature = "derive_serde", derive(Serialize, Deserialize))]
 pub struct Fr(pub(crate) [u64; 4]);
 
 /// Constant representing the modulus
